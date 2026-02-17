@@ -1,0 +1,4 @@
+INFO: System started
+WARNING: Memory usage high
+ERROR: Database connection failed
+INFO: Retry initiated
