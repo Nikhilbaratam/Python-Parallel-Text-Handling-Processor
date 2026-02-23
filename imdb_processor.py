@@ -3,19 +3,52 @@ import sqlite3
 import datetime
 import re
 
+# ---------------------------
+# Rule-based scoring dictionary
+# ---------------------------
 SCORES = {
-    "good": 1,
-    "great": 2,
+
+    # Strong Positive
+    "masterpiece": 4,
+    "outstanding": 3,
     "excellent": 3,
+    "brilliant": 3,
+    "fantastic": 3,
+
+    # Moderate Positive
     "amazing": 2,
-    "happy": 1,
+    "great": 2,
+    "good": 1,
+    "enjoyable": 2,
+    "interesting": 1,
+    "love": 2,
+    "liked": 1,
+
+    # Neutral-ish
+    "okay": 0,
+    "average": 0,
+
+    # Moderate Negative
     "bad": -1,
-    "poor": -2,
-    "terrible": -3,
     "boring": -2,
-    "sad": -1
+    "dull": -2,
+    "slow": -1,
+    "weak": -1,
+    "disappointing": -2,
+
+    # Strong Negative
+    "worst": -3,
+    "terrible": -3,
+    "awful": -3,
+    "horrible": -3,
+    "waste": -3,
+    "hate": -2
 }
 
+
+# ---------------------------
+# Database Setup
+# ---------------------------
 def init_db():
     conn = sqlite3.connect("imdb_sentiment.db")
     cursor = conn.cursor()
@@ -34,12 +67,30 @@ def init_db():
     conn.close()
 
 
+# ---------------------------
+# Score Calculation
+# ---------------------------
+NEGATIONS = {"not", "no", "never", "none"}
+
 def calculate_score(text):
     words = re.findall(r"\b\w+\b", str(text).lower())
 
     score = 0
+    negate = False
+
     for word in words:
-        score += SCORES.get(word, 0)
+
+        if word in NEGATIONS:
+            negate = True
+            continue
+
+        word_score = SCORES.get(word, 0)
+
+        if negate:
+            word_score *= -1   # Reverse polarity
+            negate = False
+
+        score += word_score
 
     if score > 0:
         sentiment = "Positive"
@@ -51,6 +102,10 @@ def calculate_score(text):
     return score, sentiment
 
 
+
+# ---------------------------
+# Store Results
+# ---------------------------
 def store_result(text, score, sentiment):
     conn = sqlite3.connect("imdb_sentiment.db")
     cursor = conn.cursor()
@@ -66,6 +121,9 @@ def store_result(text, score, sentiment):
     conn.close()
 
 
+# ---------------------------
+# Main Execution
+# ---------------------------
 if __name__ == "__main__":
 
     init_db()
@@ -84,5 +142,4 @@ if __name__ == "__main__":
         print("Dataset processed successfully.")
 
     except Exception as e:
-        print("Error:", e)
-
+        print("Error occurred:", e)
