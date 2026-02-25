@@ -1,14 +1,16 @@
 import sqlite3
 
-conn = sqlite3.connect("processor.db")
+DB_NAME = "flipkart_sentiment.db"
+
+conn = sqlite3.connect(DB_NAME)
 cursor = conn.cursor()
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS results (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    filename TEXT,
-    keyword TEXT,
-    count INTEGER
+    text TEXT,
+    score INTEGER,
+    sentiment TEXT
 )
 """)
 
