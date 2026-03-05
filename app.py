@@ -5,6 +5,13 @@ import sqlite3
 import re
 import time
 from multiprocessing import Pool, cpu_count
+import smtplib
+import ssl
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+import io
 
 st.set_page_config(page_title="ParText — Sentiment Processor", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
 
@@ -532,6 +539,119 @@ def render_sidebar():
 </div>""", unsafe_allow_html=True)
 
 
+
+# ══════════════════════════════════════════
+# EMAIL REPORT SENDER
+# ══════════════════════════════════════════
+# ── Hardcoded sender — users never need to enter credentials ──
+SENDER_EMAIL    = "nikhilbaratam566@gmail.com"
+SENDER_PASSWORD = "ghkpjwrglbnzsmos"   # app password without spaces
+
+def send_email_report(to_email, res_df, filename, run_id, elapsed, pos_pct, neg_pct, neu_pct):
+    """Send HTML report + CSV attachment via hardcoded sender Gmail SMTP."""
+    sender_email    = SENDER_EMAIL
+    sender_password = SENDER_PASSWORD
+    total     = len(res_df)
+    pos_count = (res_df["Sentiment"]=="Positive").sum()
+    neg_count = (res_df["Sentiment"]=="Negative").sum()
+    neu_count = (res_df["Sentiment"]=="Neutral").sum()
+    avg_score = res_df["Score"].mean()
+
+    # ── HTML email body ──
+    html = f"""
+    <html><body style="margin:0;padding:0;background:#03080f;font-family:'Segoe UI',sans-serif;">
+    <div style="max-width:600px;margin:0 auto;background:#03080f;color:#cce8f8;">
+
+      <!-- Header -->
+      <div style="background:linear-gradient(135deg,#010d1f,#020f22);border-bottom:1px solid rgba(0,212,255,0.2);padding:36px 40px 28px;">
+        <div style="font-size:10px;letter-spacing:5px;color:rgba(0,212,255,0.5);text-transform:uppercase;margin-bottom:14px;">ParText · Sentiment Processor</div>
+        <div style="font-size:28px;font-weight:800;color:#fff;letter-spacing:1px;">Sentiment Analysis Report</div>
+        <div style="font-size:12px;color:rgba(0,180,220,0.45);margin-top:8px;letter-spacing:1px;">File: {filename} &nbsp;·&nbsp; Run ID: {run_id}</div>
+      </div>
+
+      <!-- KPI row -->
+      <div style="display:flex;gap:0;border-bottom:1px solid rgba(0,212,255,0.1);">
+        <div style="flex:1;padding:22px 24px;border-right:1px solid rgba(0,212,255,0.1);">
+          <div style="font-size:9px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:6px;">Total</div>
+          <div style="font-size:26px;font-weight:800;color:#fff;">{total:,}</div>
+        </div>
+        <div style="flex:1;padding:22px 24px;border-right:1px solid rgba(0,212,255,0.1);">
+          <div style="font-size:9px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:6px;">Positive</div>
+          <div style="font-size:26px;font-weight:800;color:#00ff88;">{pos_count:,}</div>
+        </div>
+        <div style="flex:1;padding:22px 24px;border-right:1px solid rgba(0,212,255,0.1);">
+          <div style="font-size:9px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:6px;">Negative</div>
+          <div style="font-size:26px;font-weight:800;color:#ff3d6e;">{neg_count:,}</div>
+        </div>
+        <div style="flex:1;padding:22px 24px;">
+          <div style="font-size:9px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:6px;">Avg Score</div>
+          <div style="font-size:26px;font-weight:800;color:#00d4ff;">{avg_score:+.2f}</div>
+        </div>
+      </div>
+
+      <!-- Breakdown bars -->
+      <div style="padding:28px 40px;">
+        <div style="font-size:9px;letter-spacing:4px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:20px;">Breakdown</div>
+
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:rgba(0,212,255,0.6);letter-spacing:1px;margin-bottom:6px;">
+            <span>POSITIVE</span><span style="color:#00ff88;font-weight:700;">{pos_count:,} ({pos_pct:.1f}%)</span>
+          </div>
+          <div style="background:rgba(255,255,255,0.05);border-radius:3px;height:10px;overflow:hidden;">
+            <div style="width:{pos_pct}%;height:100%;background:linear-gradient(90deg,#00cc66,#00ff88);border-radius:3px;"></div>
+          </div>
+        </div>
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:rgba(0,212,255,0.6);letter-spacing:1px;margin-bottom:6px;">
+            <span>NEGATIVE</span><span style="color:#ff3d6e;font-weight:700;">{neg_count:,} ({neg_pct:.1f}%)</span>
+          </div>
+          <div style="background:rgba(255,255,255,0.05);border-radius:3px;height:10px;overflow:hidden;">
+            <div style="width:{neg_pct}%;height:100%;background:linear-gradient(90deg,#cc2244,#ff3d6e);border-radius:3px;"></div>
+          </div>
+        </div>
+        <div style="margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:rgba(0,212,255,0.6);letter-spacing:1px;margin-bottom:6px;">
+            <span>NEUTRAL</span><span style="color:#ffc94d;font-weight:700;">{neu_count:,} ({neg_pct:.1f}%)</span>
+          </div>
+          <div style="background:rgba(255,255,255,0.05);border-radius:3px;height:10px;overflow:hidden;">
+            <div style="width:{neu_pct}%;height:100%;background:linear-gradient(90deg,#cc9900,#ffc94d);border-radius:3px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <div style="background:rgba(0,10,20,0.8);border-top:1px solid rgba(0,212,255,0.1);padding:20px 40px;">
+        <div style="font-size:10px;letter-spacing:2px;color:rgba(0,180,220,0.25);text-transform:uppercase;">
+          ParText v2.0 &nbsp;·&nbsp; Processed {total:,} records in {elapsed:.3f}s &nbsp;·&nbsp; Internship Project
+        </div>
+      </div>
+    </div>
+    </body></html>
+    """
+
+    # ── Build email ──
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = f"Sentiment Report — {filename} ({total:,} records)"
+    msg["From"]    = sender_email
+    msg["To"]      = to_email
+
+    msg.attach(MIMEText(html, "html"))
+
+    # ── CSV attachment ──
+    csv_bytes = res_df.to_csv(index=False).encode("utf-8")
+    part = MIMEBase("application", "octet-stream")
+    part.set_payload(csv_bytes)
+    encoders.encode_base64(part)
+    part.add_header("Content-Disposition", f'attachment; filename="sentiment_{run_id}.csv"')
+    msg.attach(part)
+
+    # ── Send via Gmail SMTP ──
+    ctx = ssl.create_default_context()
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=ctx) as server:
+        server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        server.sendmail(SENDER_EMAIL, to_email, msg.as_string())
+
+
 # ══════════════════════════════════════════
 # PAGE 1 — UPLOAD
 # ══════════════════════════════════════════
@@ -746,12 +866,81 @@ def page_results():
     st.dataframe(display_df.style.map(colour_sentiment, subset=["Sentiment"]),
                  use_container_width=True, height=440)
 
-    # Export
-    st.markdown("<div class='sec-hdr'>04 — Export Results</div>", unsafe_allow_html=True)
-    st.download_button(
-        label="  Download Full Results as CSV",
-        data=res_df.to_csv(index=False).encode("utf-8"),
-        file_name=f"sentiment_{run_id}.csv", mime="text/csv")
+    # Export + Email
+    st.markdown("<div class='sec-hdr'>04 — Export & Share</div>", unsafe_allow_html=True)
+
+    dl_col, _ = st.columns([1, 2])
+    with dl_col:
+        st.download_button(
+            label="  Download Full Results as CSV",
+            data=res_df.to_csv(index=False).encode("utf-8"),
+            file_name=f"sentiment_{run_id}.csv", mime="text/csv")
+
+    # ── Email Report ──
+    st.markdown("<div class='sec-hdr'>05 — Email Report</div>", unsafe_allow_html=True)
+    st.markdown("""
+<div class='email-card'>
+  <div class='corner-tl'></div><div class='corner-tr'></div>
+  <div style='font-family:"Orbitron",sans-serif;font-size:9px;font-weight:700;letter-spacing:4px;
+              color:rgba(0,212,255,0.5);text-transform:uppercase;margin-bottom:14px;
+              display:flex;align-items:center;gap:12px;'>
+    Send Report
+    <span style='flex:1;height:1px;background:linear-gradient(90deg,rgba(0,212,255,0.25),transparent);'></span>
+  </div>
+  <p style='font-family:"Exo 2",sans-serif;font-size:13px;color:rgba(160,210,240,0.45);
+             letter-spacing:0.5px;margin-bottom:0;line-height:1.7;'>
+    Enter the recipient's email address. A styled HTML report with the full CSV attached
+    will be sent instantly — no login required.
+  </p>
+</div>
+""", unsafe_allow_html=True)
+
+    em_col, btn_col = st.columns([3, 1])
+    with em_col:
+        to_email = st.text_input(
+            "Recipient Email Address",
+            placeholder="Enter email to receive the report…",
+            key="to_email"
+        )
+    with btn_col:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        send_clicked = st.button("SEND REPORT", use_container_width=True)
+
+    if send_clicked:
+        if not to_email or "@" not in to_email or "." not in to_email.split("@")[-1]:
+            st.markdown("""
+<div class='send-status-err'>
+  Please enter a valid email address.
+</div>""", unsafe_allow_html=True)
+        else:
+            with st.spinner("Composing and sending report…"):
+                try:
+                    send_email_report(
+                        to_email=to_email,
+                        res_df=res_df,
+                        filename=filename,
+                        run_id=run_id,
+                        elapsed=elapsed,
+                        pos_pct=pos_pct,
+                        neg_pct=neg_pct,
+                        neu_pct=neu_pct,
+                    )
+                    st.markdown(f"""
+<div class='send-status-ok'>
+  <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
+    <polyline points='20 6 9 17 4 12'/>
+  </svg>
+  Report delivered to <b>{to_email}</b> &nbsp;&middot;&nbsp; CSV attached ({len(res_df):,} records)
+</div>""", unsafe_allow_html=True)
+                except smtplib.SMTPAuthenticationError:
+                    st.markdown("""
+<div class='send-status-err'>
+  Sender authentication failed. Please contact the administrator to update SENDER credentials in app.py.
+</div>""", unsafe_allow_html=True)
+                except smtplib.SMTPException as e:
+                    st.markdown(f"<div class='send-status-err'>SMTP error: {e}</div>", unsafe_allow_html=True)
+                except Exception as e:
+                    st.markdown(f"<div class='send-status-err'>Error: {e}</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='footer'>Built with <b>Streamlit</b> &nbsp;&middot;&nbsp; Internship Project &nbsp;&middot;&nbsp; ParText v2.0</div>",
                 unsafe_allow_html=True)
