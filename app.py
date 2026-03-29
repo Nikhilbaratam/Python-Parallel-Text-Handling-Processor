@@ -12,6 +12,8 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 import io
+import os
+from rules import PATTERN_RULES, WORD_SCORES, NEGATIONS, INTENSIFIERS
 
 st.set_page_config(page_title="ParText — Sentiment Processor", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
 
@@ -367,30 +369,7 @@ if (!window.parent.document.getElementById('partext-theme')) {
 # ══════════════════════════════════════════
 # SCORING ENGINE
 # ══════════════════════════════════════════
-PATTERN_RULES = [
-    (r"highly recommend|must buy|worth every penny|value for money", 4),
-    (r"excellent product|superb product|loved the product|very satisfied", 4),
-    (r"best purchase|works perfectly|awesome product|great quality", 3),
-    (r"good quality|nice product|happy with the product", 2),
-    (r"waste of money|do not buy|not worth|very disappointed", -4),
-    (r"worst product|poor quality|stopped working|defective product", -4),
-    (r"bad experience|totally useless|very bad|extremely bad", -3),
-    (r"damaged product|received damaged|fake product", -3),
-    (r"late delivery|delivery was late|poor delivery", -2),
-    (r"fast delivery|quick delivery|delivered on time", 2),
-    (r"works great|works fine|working perfectly", 3),
-    (r"not working|does not work|stopped working", -3),
-    (r"as expected|met expectations", 2),
-    (r"not as expected|did not meet expectations", -2),
-]
-WORD_SCORES = {
-    "good":1,"nice":1,"excellent":2,"amazing":2,"perfect":2,"satisfied":2,
-    "happy":1,"love":2,"great":2,"awesome":2,"best":2,"bad":-1,"poor":-2,
-    "worst":-3,"waste":-2,"disappointed":-2,"defective":-2,"damaged":-2,
-    "useless":-2,"hate":-2,"problem":-1,"issue":-1,
-}
-NEGATIONS    = {"not","no","never","none"}
-INTENSIFIERS = {"very","extremely","really","too"}
+# Rules imported from rules.py
 
 def calculate_score(text):
     original = str(text); low = original.lower(); score = 0
@@ -548,86 +527,277 @@ SENDER_EMAIL    = "nikhilbaratam566@gmail.com"
 SENDER_PASSWORD = "ghkpjwrglbnzsmos"   # app password without spaces
 
 def send_email_report(to_email, res_df, filename, run_id, elapsed, pos_pct, neg_pct, neu_pct):
-    """Send HTML report + CSV attachment via hardcoded sender Gmail SMTP."""
+    """Send rich HTML report + CSV attachment via Gmail SMTP."""
     sender_email    = SENDER_EMAIL
     sender_password = SENDER_PASSWORD
     total     = len(res_df)
-    pos_count = (res_df["Sentiment"]=="Positive").sum()
-    neg_count = (res_df["Sentiment"]=="Negative").sum()
-    neu_count = (res_df["Sentiment"]=="Neutral").sum()
+    pos_count = int((res_df["Sentiment"]=="Positive").sum())
+    neg_count = int((res_df["Sentiment"]=="Negative").sum())
+    neu_count = int((res_df["Sentiment"]=="Neutral").sum())
     avg_score = res_df["Score"].mean()
+    max_score = int(res_df["Score"].max())
+    min_score = int(res_df["Score"].min())
+    high_pos  = int((res_df["Score"] >= 4).sum())
+    high_neg  = int((res_df["Score"] <= -4).sum())
 
-    # ── HTML email body ──
-    html = f"""
-    <html><body style="margin:0;padding:0;background:#03080f;font-family:'Segoe UI',sans-serif;">
-    <div style="max-width:600px;margin:0 auto;background:#03080f;color:#cce8f8;">
+    # ── SVG Donut chart values ──
+    # Circle circumference for r=52 is ~326.7
+    circ = 326.73
+    pos_dash = round(pos_pct / 100 * circ, 2)
+    neg_dash = round(neg_pct / 100 * circ, 2)
+    neu_dash = round(neu_pct / 100 * circ, 2)
+    pos_off  = 0
+    neg_off  = round(-pos_dash, 2)
+    neu_off  = round(-(pos_dash + neg_dash), 2)
 
-      <!-- Header -->
-      <div style="background:linear-gradient(135deg,#010d1f,#020f22);border-bottom:1px solid rgba(0,212,255,0.2);padding:36px 40px 28px;">
-        <div style="font-size:10px;letter-spacing:5px;color:rgba(0,212,255,0.5);text-transform:uppercase;margin-bottom:14px;">ParText · Sentiment Processor</div>
-        <div style="font-size:28px;font-weight:800;color:#fff;letter-spacing:1px;">Sentiment Analysis Report</div>
-        <div style="font-size:12px;color:rgba(0,180,220,0.45);margin-top:8px;letter-spacing:1px;">File: {filename} &nbsp;·&nbsp; Run ID: {run_id}</div>
+    # ── Score distribution buckets ──
+    bins   = {"Very High (≥4)":0, "High (2-3)":0, "Neutral (-1 to 1)":0, "Low (-2 to -3)":0, "Very Low (≤-4)":0}
+    for s in res_df["Score"]:
+        if s >= 4:   bins["Very High (≥4)"] += 1
+        elif s >= 2: bins["High (2-3)"] += 1
+        elif s >= -1:bins["Neutral (-1 to 1)"] += 1
+        elif s >= -3:bins["Low (-2 to -3)"] += 1
+        else:        bins["Very Low (≤-4)"] += 1
+    max_bin = max(bins.values()) or 1
+
+    def bin_bar(count, color):
+        pct = round(count / max_bin * 100)
+        return f"""<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+          <div style="width:130px;font-size:10px;color:rgba(0,200,240,0.6);letter-spacing:1px;">{{}}</div>
+          <div style="flex:1;background:rgba(255,255,255,0.04);border-radius:3px;height:14px;overflow:hidden;">
+            <div style="width:{pct}%;height:100%;background:{color};border-radius:3px;"></div>
+          </div>
+          <div style="width:55px;text-align:right;font-size:11px;font-weight:700;color:{color};">{{}}</div>
+        </div>"""
+
+    dist_html = ""
+    colors = ["#00ff88","#00d4ff","#ffc94d","#ff8c42","#ff3d6e"]
+    for (label, count), color in zip(bins.items(), colors):
+        pct2 = round(count / max_bin * 100)
+        dist_html += f"""<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">
+          <div style="width:140px;font-size:10px;color:rgba(0,200,240,0.55);letter-spacing:0.5px;">{label}</div>
+          <div style="flex:1;background:rgba(255,255,255,0.04);border-radius:3px;height:14px;overflow:hidden;">
+            <div style="width:{pct2}%;height:100%;background:{color};border-radius:3px;"></div>
+          </div>
+          <div style="min-width:55px;text-align:right;font-size:11px;font-weight:700;color:{color};">{count:,}</div>
+        </div>"""
+
+    # ── Top 5 positive samples ──
+    top_pos = res_df[res_df["Sentiment"]=="Positive"].nlargest(5,"Score")[["Text","Score"]]
+    top_neg = res_df[res_df["Sentiment"]=="Negative"].nsmallest(5,"Score")[["Text","Score"]]
+
+    def sample_rows(df, color):
+        rows = ""
+        for _, r in df.iterrows():
+            txt = str(r["Text"])[:90] + ("…" if len(str(r["Text"])) > 90 else "")
+            rows += f"""<tr>
+              <td style="padding:10px 14px;font-size:12px;color:#cce8f8;border-bottom:1px solid rgba(0,212,255,0.07);">{txt}</td>
+              <td style="padding:10px 14px;text-align:center;font-size:13px;font-weight:800;color:{color};border-bottom:1px solid rgba(0,212,255,0.07);">{int(r["Score"]):+d}</td>
+            </tr>"""
+        return rows
+
+    # ── Insight sentence ──
+    dominant = "Positive" if pos_count > neg_count and pos_count > neu_count                else ("Negative" if neg_count > pos_count and neg_count > neu_count else "Neutral")
+    dom_color = "#00ff88" if dominant=="Positive" else ("#ff3d6e" if dominant=="Negative" else "#ffc94d")
+    insight = (f"Overall sentiment is <b style='color:{dom_color}'>{dominant}</b>. "
+               f"{pos_pct:.1f}% of reviews are positive and {neg_pct:.1f}% are negative. "
+               f"Average score of <b style='color:#00d4ff'>{avg_score:+.2f}</b> indicates "
+               + ("strong customer satisfaction." if avg_score >= 2
+                  else "moderate satisfaction." if avg_score >= 0
+                  else "customer dissatisfaction that needs attention."))
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#03080f;font-family:'Segoe UI',Arial,sans-serif;">
+<div style="max-width:640px;margin:0 auto;background:#03080f;color:#cce8f8;">
+
+  <!-- ══ HEADER ══ -->
+  <div style="background:linear-gradient(135deg,#010d1f 0%,#021428 100%);padding:40px 40px 32px;border-bottom:2px solid rgba(0,212,255,0.15);position:relative;">
+    <div style="font-size:9px;letter-spacing:6px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:12px;">
+      ParText &nbsp;·&nbsp; Sentiment Processor v2.0
+    </div>
+    <div style="font-size:30px;font-weight:800;color:#ffffff;letter-spacing:0.5px;line-height:1.2;">
+      Sentiment Analysis<br>Report
+    </div>
+    <div style="margin-top:14px;font-size:12px;color:rgba(0,180,220,0.4);letter-spacing:1px;">
+      File: <b style="color:rgba(0,212,255,0.6);">{filename}</b> &nbsp;·&nbsp; Run: <b style="color:rgba(0,212,255,0.6);">{run_id}</b>
+    </div>
+    <div style="position:absolute;top:0;right:0;width:120px;height:120px;
+      border-top:1px solid rgba(0,212,255,0.15);border-right:1px solid rgba(0,212,255,0.15);"></div>
+  </div>
+
+  <!-- ══ KPI CARDS ══ -->
+  <div style="display:flex;border-bottom:1px solid rgba(0,212,255,0.1);">
+    <div style="flex:1;padding:24px 20px;border-right:1px solid rgba(0,212,255,0.08);text-align:center;">
+      <div style="font-size:8px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:8px;">Total</div>
+      <div style="font-size:28px;font-weight:800;color:#fff;">{total:,}</div>
+      <div style="font-size:9px;color:rgba(0,212,255,0.3);margin-top:4px;">reviews</div>
+    </div>
+    <div style="flex:1;padding:24px 20px;border-right:1px solid rgba(0,212,255,0.08);text-align:center;">
+      <div style="font-size:8px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:8px;">Positive</div>
+      <div style="font-size:28px;font-weight:800;color:#00ff88;">{pos_count:,}</div>
+      <div style="font-size:9px;color:#00ff88;opacity:0.5;margin-top:4px;">{pos_pct:.1f}%</div>
+    </div>
+    <div style="flex:1;padding:24px 20px;border-right:1px solid rgba(0,212,255,0.08);text-align:center;">
+      <div style="font-size:8px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:8px;">Negative</div>
+      <div style="font-size:28px;font-weight:800;color:#ff3d6e;">{neg_count:,}</div>
+      <div style="font-size:9px;color:#ff3d6e;opacity:0.5;margin-top:4px;">{neg_pct:.1f}%</div>
+    </div>
+    <div style="flex:1;padding:24px 20px;border-right:1px solid rgba(0,212,255,0.08);text-align:center;">
+      <div style="font-size:8px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:8px;">Neutral</div>
+      <div style="font-size:28px;font-weight:800;color:#ffc94d;">{neu_count:,}</div>
+      <div style="font-size:9px;color:#ffc94d;opacity:0.5;margin-top:4px;">{neu_pct:.1f}%</div>
+    </div>
+    <div style="flex:1;padding:24px 20px;text-align:center;">
+      <div style="font-size:8px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:8px;">Avg Score</div>
+      <div style="font-size:28px;font-weight:800;color:#00d4ff;">{avg_score:+.2f}</div>
+      <div style="font-size:9px;color:rgba(0,212,255,0.3);margin-top:4px;">out of ±10</div>
+    </div>
+  </div>
+
+  <!-- ══ INSIGHT BANNER ══ -->
+  <div style="background:rgba(0,212,255,0.04);border-left:3px solid rgba(0,212,255,0.4);
+              padding:16px 24px;margin:24px 32px;border-radius:0 4px 4px 0;">
+    <div style="font-size:9px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:6px;">AI Insight</div>
+    <div style="font-size:13px;color:rgba(200,232,248,0.8);line-height:1.7;">{insight}</div>
+  </div>
+
+  <!-- ══ DONUT CHART + BREAKDOWN BARS ══ -->
+  <div style="padding:8px 32px 28px;">
+    <div style="font-size:9px;letter-spacing:4px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:20px;padding-top:16px;
+      border-top:1px solid rgba(0,212,255,0.08);">Sentiment Distribution</div>
+
+    <div style="display:flex;align-items:center;gap:32px;">
+
+      <!-- SVG Donut -->
+      <div style="flex-shrink:0;">
+        <svg width="150" height="150" viewBox="0 0 150 150">
+          <circle cx="75" cy="75" r="52" fill="none" stroke="rgba(255,255,255,0.04)" stroke-width="18"/>
+          <!-- Positive arc -->
+          <circle cx="75" cy="75" r="52" fill="none" stroke="#00ff88" stroke-width="18"
+            stroke-dasharray="{pos_dash} {circ}" stroke-dashoffset="{pos_off}"
+            stroke-linecap="butt" transform="rotate(-90 75 75)"/>
+          <!-- Negative arc -->
+          <circle cx="75" cy="75" r="52" fill="none" stroke="#ff3d6e" stroke-width="18"
+            stroke-dasharray="{neg_dash} {circ}" stroke-dashoffset="{neg_off}"
+            stroke-linecap="butt" transform="rotate(-90 75 75)"/>
+          <!-- Neutral arc -->
+          <circle cx="75" cy="75" r="52" fill="none" stroke="#ffc94d" stroke-width="18"
+            stroke-dasharray="{neu_dash} {circ}" stroke-dashoffset="{neu_off}"
+            stroke-linecap="butt" transform="rotate(-90 75 75)"/>
+          <!-- Centre label -->
+          <text x="75" y="69" text-anchor="middle" fill="#ffffff" font-size="18" font-weight="800"
+            font-family="Arial">{total:,}</text>
+          <text x="75" y="85" text-anchor="middle" fill="rgba(0,212,255,0.5)" font-size="8"
+            letter-spacing="2" font-family="Arial">REVIEWS</text>
+        </svg>
       </div>
 
-      <!-- KPI row -->
-      <div style="display:flex;gap:0;border-bottom:1px solid rgba(0,212,255,0.1);">
-        <div style="flex:1;padding:22px 24px;border-right:1px solid rgba(0,212,255,0.1);">
-          <div style="font-size:9px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:6px;">Total</div>
-          <div style="font-size:26px;font-weight:800;color:#fff;">{total:,}</div>
-        </div>
-        <div style="flex:1;padding:22px 24px;border-right:1px solid rgba(0,212,255,0.1);">
-          <div style="font-size:9px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:6px;">Positive</div>
-          <div style="font-size:26px;font-weight:800;color:#00ff88;">{pos_count:,}</div>
-        </div>
-        <div style="flex:1;padding:22px 24px;border-right:1px solid rgba(0,212,255,0.1);">
-          <div style="font-size:9px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:6px;">Negative</div>
-          <div style="font-size:26px;font-weight:800;color:#ff3d6e;">{neg_count:,}</div>
-        </div>
-        <div style="flex:1;padding:22px 24px;">
-          <div style="font-size:9px;letter-spacing:3px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:6px;">Avg Score</div>
-          <div style="font-size:26px;font-weight:800;color:#00d4ff;">{avg_score:+.2f}</div>
-        </div>
-      </div>
-
-      <!-- Breakdown bars -->
-      <div style="padding:28px 40px;">
-        <div style="font-size:9px;letter-spacing:4px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:20px;">Breakdown</div>
-
-        <div style="margin-bottom:16px;">
-          <div style="display:flex;justify-content:space-between;font-size:11px;color:rgba(0,212,255,0.6);letter-spacing:1px;margin-bottom:6px;">
-            <span>POSITIVE</span><span style="color:#00ff88;font-weight:700;">{pos_count:,} ({pos_pct:.1f}%)</span>
-          </div>
-          <div style="background:rgba(255,255,255,0.05);border-radius:3px;height:10px;overflow:hidden;">
-            <div style="width:{pos_pct}%;height:100%;background:linear-gradient(90deg,#00cc66,#00ff88);border-radius:3px;"></div>
+      <!-- Legend + bars -->
+      <div style="flex:1;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+          <div style="width:12px;height:12px;border-radius:50%;background:#00ff88;flex-shrink:0;"></div>
+          <div style="flex:1;">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:rgba(0,200,240,0.6);margin-bottom:4px;">
+              <span>Positive</span><span style="color:#00ff88;font-weight:700;">{pos_count:,} · {pos_pct:.1f}%</span>
+            </div>
+            <div style="background:rgba(255,255,255,0.05);border-radius:2px;height:8px;">
+              <div style="width:{pos_pct}%;height:100%;background:linear-gradient(90deg,#00cc66,#00ff88);border-radius:2px;"></div>
+            </div>
           </div>
         </div>
-        <div style="margin-bottom:16px;">
-          <div style="display:flex;justify-content:space-between;font-size:11px;color:rgba(0,212,255,0.6);letter-spacing:1px;margin-bottom:6px;">
-            <span>NEGATIVE</span><span style="color:#ff3d6e;font-weight:700;">{neg_count:,} ({neg_pct:.1f}%)</span>
-          </div>
-          <div style="background:rgba(255,255,255,0.05);border-radius:3px;height:10px;overflow:hidden;">
-            <div style="width:{neg_pct}%;height:100%;background:linear-gradient(90deg,#cc2244,#ff3d6e);border-radius:3px;"></div>
-          </div>
-        </div>
-        <div style="margin-bottom:16px;">
-          <div style="display:flex;justify-content:space-between;font-size:11px;color:rgba(0,212,255,0.6);letter-spacing:1px;margin-bottom:6px;">
-            <span>NEUTRAL</span><span style="color:#ffc94d;font-weight:700;">{neu_count:,} ({neg_pct:.1f}%)</span>
-          </div>
-          <div style="background:rgba(255,255,255,0.05);border-radius:3px;height:10px;overflow:hidden;">
-            <div style="width:{neu_pct}%;height:100%;background:linear-gradient(90deg,#cc9900,#ffc94d);border-radius:3px;"></div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+          <div style="width:12px;height:12px;border-radius:50%;background:#ff3d6e;flex-shrink:0;"></div>
+          <div style="flex:1;">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:rgba(0,200,240,0.6);margin-bottom:4px;">
+              <span>Negative</span><span style="color:#ff3d6e;font-weight:700;">{neg_count:,} · {neg_pct:.1f}%</span>
+            </div>
+            <div style="background:rgba(255,255,255,0.05);border-radius:2px;height:8px;">
+              <div style="width:{neg_pct}%;height:100%;background:linear-gradient(90deg,#cc2244,#ff3d6e);border-radius:2px;"></div>
+            </div>
           </div>
         </div>
-      </div>
-
-      <!-- Footer -->
-      <div style="background:rgba(0,10,20,0.8);border-top:1px solid rgba(0,212,255,0.1);padding:20px 40px;">
-        <div style="font-size:10px;letter-spacing:2px;color:rgba(0,180,220,0.25);text-transform:uppercase;">
-          ParText v2.0 &nbsp;·&nbsp; Processed {total:,} records in {elapsed:.3f}s &nbsp;·&nbsp; Internship Project
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:12px;height:12px;border-radius:50%;background:#ffc94d;flex-shrink:0;"></div>
+          <div style="flex:1;">
+            <div style="display:flex;justify-content:space-between;font-size:10px;color:rgba(0,200,240,0.6);margin-bottom:4px;">
+              <span>Neutral</span><span style="color:#ffc94d;font-weight:700;">{neu_count:,} · {neu_pct:.1f}%</span>
+            </div>
+            <div style="background:rgba(255,255,255,0.05);border-radius:2px;height:8px;">
+              <div style="width:{neu_pct}%;height:100%;background:linear-gradient(90deg,#cc9900,#ffc94d);border-radius:2px;"></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
-    </body></html>
-    """
+  </div>
+
+  <!-- ══ SCORE DISTRIBUTION ══ -->
+  <div style="padding:24px 32px 28px;border-top:1px solid rgba(0,212,255,0.08);">
+    <div style="font-size:9px;letter-spacing:4px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:20px;">Score Distribution</div>
+    {dist_html}
+  </div>
+
+  <!-- ══ QUICK STATS ROW ══ -->
+  <div style="display:flex;gap:0;border-top:1px solid rgba(0,212,255,0.08);border-bottom:1px solid rgba(0,212,255,0.08);">
+    <div style="flex:1;padding:18px 20px;text-align:center;border-right:1px solid rgba(0,212,255,0.08);">
+      <div style="font-size:8px;letter-spacing:2px;color:rgba(0,212,255,0.35);text-transform:uppercase;margin-bottom:6px;">Highest Score</div>
+      <div style="font-size:22px;font-weight:800;color:#00ff88;">+{max_score}</div>
+    </div>
+    <div style="flex:1;padding:18px 20px;text-align:center;border-right:1px solid rgba(0,212,255,0.08);">
+      <div style="font-size:8px;letter-spacing:2px;color:rgba(0,212,255,0.35);text-transform:uppercase;margin-bottom:6px;">Lowest Score</div>
+      <div style="font-size:22px;font-weight:800;color:#ff3d6e;">{min_score}</div>
+    </div>
+    <div style="flex:1;padding:18px 20px;text-align:center;border-right:1px solid rgba(0,212,255,0.08);">
+      <div style="font-size:8px;letter-spacing:2px;color:rgba(0,212,255,0.35);text-transform:uppercase;margin-bottom:6px;">Strong Positives</div>
+      <div style="font-size:22px;font-weight:800;color:#00ff88;">{high_pos:,}</div>
+    </div>
+    <div style="flex:1;padding:18px 20px;text-align:center;">
+      <div style="font-size:8px;letter-spacing:2px;color:rgba(0,212,255,0.35);text-transform:uppercase;margin-bottom:6px;">Strong Negatives</div>
+      <div style="font-size:22px;font-weight:800;color:#ff3d6e;">{high_neg:,}</div>
+    </div>
+  </div>
+
+  <!-- ══ TOP POSITIVE REVIEWS ══ -->
+  <div style="padding:24px 32px 8px;">
+    <div style="font-size:9px;letter-spacing:4px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:16px;">Top Positive Reviews</div>
+    <table style="width:100%;border-collapse:collapse;background:rgba(0,255,136,0.02);border:1px solid rgba(0,255,136,0.12);border-radius:4px;overflow:hidden;">
+      <tr style="background:rgba(0,255,136,0.06);">
+        <th style="padding:10px 14px;text-align:left;font-size:9px;letter-spacing:2px;color:rgba(0,255,136,0.5);text-transform:uppercase;">Review</th>
+        <th style="padding:10px 14px;text-align:center;font-size:9px;letter-spacing:2px;color:rgba(0,255,136,0.5);text-transform:uppercase;">Score</th>
+      </tr>
+      {sample_rows(top_pos, "#00ff88")}
+    </table>
+  </div>
+
+  <!-- ══ TOP NEGATIVE REVIEWS ══ -->
+  <div style="padding:16px 32px 24px;">
+    <div style="font-size:9px;letter-spacing:4px;color:rgba(0,212,255,0.4);text-transform:uppercase;margin-bottom:16px;">Top Negative Reviews</div>
+    <table style="width:100%;border-collapse:collapse;background:rgba(255,61,110,0.02);border:1px solid rgba(255,61,110,0.12);border-radius:4px;overflow:hidden;">
+      <tr style="background:rgba(255,61,110,0.06);">
+        <th style="padding:10px 14px;text-align:left;font-size:9px;letter-spacing:2px;color:rgba(255,61,110,0.5);text-transform:uppercase;">Review</th>
+        <th style="padding:10px 14px;text-align:center;font-size:9px;letter-spacing:2px;color:rgba(255,61,110,0.5);text-transform:uppercase;">Score</th>
+      </tr>
+      {sample_rows(top_neg, "#ff3d6e")}
+    </table>
+  </div>
+
+  <!-- ══ FOOTER ══ -->
+  <div style="background:rgba(0,5,15,0.9);border-top:1px solid rgba(0,212,255,0.1);padding:22px 32px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div>
+        <div style="font-size:13px;font-weight:800;color:rgba(0,212,255,0.6);letter-spacing:2px;">PARTEXT</div>
+        <div style="font-size:9px;color:rgba(0,180,220,0.25);letter-spacing:1px;margin-top:3px;">Sentiment Processor v2.0</div>
+      </div>
+      <div style="text-align:right;font-size:10px;color:rgba(0,180,220,0.25);letter-spacing:1px;line-height:1.8;">
+        Processed {total:,} records in {elapsed:.3f}s<br>
+        Internship Project &nbsp;·&nbsp; Python Parallel Processing
+      </div>
+    </div>
+  </div>
+
+</div>
+</body></html>"""
 
     # ── Build email ──
     msg = MIMEMultipart("mixed")
