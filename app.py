@@ -13,6 +13,9 @@ from email.mime.base import MIMEBase
 from email import encoders
 import io
 import os
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
 from rules import PATTERN_RULES, WORD_SCORES, NEGATIONS, INTENSIFIERS
 
 st.set_page_config(page_title="ParText — Sentiment Processor", page_icon="⚡", layout="wide", initial_sidebar_state="expanded")
@@ -1014,6 +1017,171 @@ def page_results():
   </div>
 </div>
 """, unsafe_allow_html=True)
+
+    # ── CHARTS ──
+    TRANSPARENT = "rgba(0,0,0,0)"
+    GRID_COLOR  = "rgba(0,212,255,0.08)"
+    FONT_COLOR  = "rgba(0,212,255,0.55)"
+    PLOT_BG     = "rgba(0,8,18,0.6)"
+
+    def base_layout(title="", height=340):
+        return dict(
+            title=dict(text=title, font=dict(family="Orbitron,sans-serif",
+                       size=10, color="rgba(0,212,255,0.55)"), x=0.01, y=0.97),
+            paper_bgcolor=TRANSPARENT,
+            plot_bgcolor=PLOT_BG,
+            font=dict(family="Exo 2,sans-serif", color=FONT_COLOR, size=11),
+            height=height,
+            margin=dict(l=40, r=20, t=48, b=40),
+            legend=dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#cce8f8", size=11),
+                        orientation="h", y=-0.18, x=0),
+        )
+
+    st.markdown("<div class='sec-hdr'>03 — Visual Analytics</div>", unsafe_allow_html=True)
+
+    # ── ROW 1: Donut (left) + Horizontal bar (right) ──
+    col_a, col_b = st.columns([1, 1], gap="large")
+
+    with col_a:
+        fig_donut = go.Figure(go.Pie(
+            labels=["Positive", "Negative", "Neutral"],
+            values=[pos_count, neg_count, neu_count],
+            hole=0.60,
+            marker=dict(
+                colors=["#00ff88", "#ff3d6e", "#ffc94d"],
+                line=dict(color="rgba(0,5,15,1)", width=2)
+            ),
+            textinfo="label+percent",
+            textfont=dict(size=11, color="#ffffff"),
+            insidetextorientation="radial",
+            hovertemplate="<b>%{label}</b><br>%{value:,} reviews<br>%{percent}<extra></extra>",
+        ))
+        fig_donut.add_annotation(
+            text=f"<b>{total:,}</b><br>REVIEWS",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=14, color="#ffffff", family="Orbitron,sans-serif"),
+            align="center"
+        )
+        lo = base_layout("SENTIMENT DISTRIBUTION", height=340)
+        lo["showlegend"] = True
+        lo["legend"]["y"] = -0.12
+        fig_donut.update_layout(**lo)
+        st.plotly_chart(fig_donut, use_container_width=True, config={"displayModeBar": False})
+
+    with col_b:
+        fig_hbar = go.Figure()
+        items = [
+            ("Positive", int(pos_count), pos_pct, "#00ff88"),
+            ("Neutral",  int(neu_count), neu_pct, "#ffc94d"),
+            ("Negative", int(neg_count), neg_pct, "#ff3d6e"),
+        ]
+        for label, count, pct, color in items:
+            fig_hbar.add_trace(go.Bar(
+                name=label, y=[label], x=[count],
+                orientation="h",
+                marker=dict(color=color, opacity=0.85, line=dict(width=0)),
+                text=f" {count:,}   {pct:.1f}%",
+                textposition="inside",
+                textfont=dict(color="#03080f", size=12, family="Exo 2,sans-serif"),
+                hovertemplate=f"<b>{label}</b><br>%{{x:,}} reviews ({pct:.1f}%)<extra></extra>",
+            ))
+        lo2 = base_layout("REVIEWS BY SENTIMENT", height=340)
+        lo2["showlegend"] = False
+        lo2["xaxis"] = dict(showgrid=True, gridcolor=GRID_COLOR, color=FONT_COLOR,
+                            tickformat=",", zeroline=False)
+        lo2["yaxis"] = dict(showgrid=False, color="#cce8f8",
+                            tickfont=dict(size=13, color="#cce8f8", family="Exo 2,sans-serif"))
+        lo2["bargap"] = 0.4
+        fig_hbar.update_layout(**lo2)
+        st.plotly_chart(fig_hbar, use_container_width=True, config={"displayModeBar": False})
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # ── ROW 2: Score histogram (left) + Box plot (right) ──
+    col_c, col_d = st.columns([1, 1], gap="large")
+
+    with col_c:
+        score_counts = res_df["Score"].value_counts().sort_index()
+        colors_hist  = ["#ff3d6e" if s < -1 else "#ffc94d" if s <= 1 else "#00ff88"
+                        for s in score_counts.index]
+        fig_hist = go.Figure(go.Bar(
+            x=score_counts.index.tolist(),
+            y=score_counts.values.tolist(),
+            marker=dict(color=colors_hist, opacity=0.85, line=dict(width=0)),
+            hovertemplate="Score <b>%{x}</b>: %{y:,} reviews<extra></extra>",
+        ))
+        lo3 = base_layout("SCORE DISTRIBUTION", height=320)
+        lo3["xaxis"] = dict(title=dict(text="Score", font=dict(color=FONT_COLOR)),
+                            showgrid=False, color=FONT_COLOR, dtick=1,
+                            tickfont=dict(size=10))
+        lo3["yaxis"] = dict(title=dict(text="Count", font=dict(color=FONT_COLOR)),
+                            showgrid=True, gridcolor=GRID_COLOR, color=FONT_COLOR,
+                            tickformat=",")
+        lo3["showlegend"] = False
+        fig_hist.update_layout(**lo3)
+        st.plotly_chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
+
+    with col_d:
+        BOX_FILLS  = {"Positive":"rgba(0,255,136,0.12)",
+                      "Negative":"rgba(255,61,110,0.12)",
+                      "Neutral":"rgba(255,201,77,0.12)"}
+        BOX_COLORS = {"Positive":"#00ff88","Negative":"#ff3d6e","Neutral":"#ffc94d"}
+        fig_box = go.Figure()
+        for sent in ["Positive", "Neutral", "Negative"]:
+            subset = res_df[res_df["Sentiment"]==sent]["Score"]
+            fig_box.add_trace(go.Box(
+                y=subset, name=sent,
+                marker=dict(color=BOX_COLORS[sent], size=3, opacity=0.6),
+                line=dict(color=BOX_COLORS[sent], width=2),
+                fillcolor=BOX_FILLS[sent],
+                boxmean="sd",
+                hovertemplate=f"<b>{sent}</b><br>Score: %{{y}}<extra></extra>",
+            ))
+        lo4 = base_layout("SCORE SPREAD BY SENTIMENT", height=320)
+        lo4["showlegend"] = False
+        lo4["yaxis"] = dict(title=dict(text="Score", font=dict(color=FONT_COLOR)),
+                            showgrid=True, gridcolor=GRID_COLOR, color=FONT_COLOR,
+                            zeroline=True, zerolinecolor="rgba(0,212,255,0.15)")
+        lo4["xaxis"] = dict(showgrid=False, color="#cce8f8",
+                            tickfont=dict(size=13, color="#cce8f8"))
+        fig_box.update_layout(**lo4)
+        st.plotly_chart(fig_box, use_container_width=True, config={"displayModeBar": False})
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # ── ROW 3: Stacked score bucket bar (full width) ──
+    b_labels = ["Very High (≥ 4)", "High (2 to 3)", "Neutral (−1 to 1)", "Low (−2 to −3)", "Very Low (≤ −4)"]
+    b_values = [
+        int((res_df["Score"] >= 4).sum()),
+        int(((res_df["Score"] >= 2) & (res_df["Score"] < 4)).sum()),
+        int(((res_df["Score"] >= -1) & (res_df["Score"] <= 1)).sum()),
+        int(((res_df["Score"] >= -3) & (res_df["Score"] < -1)).sum()),
+        int((res_df["Score"] <= -4).sum()),
+    ]
+    b_colors = ["#00ff88", "#00d4ff", "#ffc94d", "#ff8c42", "#ff3d6e"]
+    fig_bucket = go.Figure()
+    for lbl, val, col in zip(b_labels, b_values, b_colors):
+        fig_bucket.add_trace(go.Bar(
+            name=lbl, x=[val], y=[""],
+            orientation="h",
+            marker=dict(color=col, opacity=0.88, line=dict(width=0)),
+            text=f"{val:,}",
+            textposition="inside",
+            textfont=dict(color="#03080f", size=12, family="Exo 2,sans-serif"),
+            hovertemplate=f"<b>{lbl}</b>: %{{x:,}} reviews<extra></extra>",
+        ))
+    lo5 = base_layout("SCORE BUCKET BREAKDOWN", height=200)
+    lo5["barmode"]    = "stack"
+    lo5["showlegend"] = True
+    lo5["legend"]     = dict(bgcolor="rgba(0,0,0,0)", font=dict(color="#cce8f8", size=11),
+                              orientation="h", y=-0.35, x=0)
+    lo5["xaxis"]      = dict(showgrid=True, gridcolor=GRID_COLOR, color=FONT_COLOR, tickformat=",")
+    lo5["yaxis"]      = dict(showgrid=False, showticklabels=False)
+    lo5["margin"]     = dict(l=20, r=20, t=48, b=80)
+    fig_bucket.update_layout(**lo5)
+    st.plotly_chart(fig_bucket, use_container_width=True, config={"displayModeBar": False})
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
     # Table
     st.markdown("<div class='sec-hdr'>03 — Scored Records</div>", unsafe_allow_html=True)
